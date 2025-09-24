@@ -2,7 +2,7 @@
 
 ## 简介
 
-> 客户端主要用于将局域网exporter相关组件指标聚合并统一推送到VictoriaMetrics
+> 客户端主要用于将局域网**exporter**相关组件指标聚合并推送到**BigHeartBeat**后转发到**VictoriaMetrics**
 
 ## 客户端配置文件
 
