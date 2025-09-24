@@ -1,0 +1,30 @@
+# VictoriaMetrics 的上报地址
+#victoria_metrics_url: "http://192.168.1.160:5001/report"
+# nginx代理+token认证
+victoria_metrics_url: "http://192.168.1.225:31037/report"
+
+# 任务名称，用于标识监控任务
+job_name: "system_monitoring"
+
+# 数据上报间隔（单位：秒）
+report_interval: 5
+
+# 抓取目标配置，类似于 vmagent 的 scrape_configs
+scrape_configs:
+  - job_name: "node_exporter"
+    static_configs:
+      - targets: ["192.168.1.217:9100","192.168.1.218:9100","192.168.1.243:9100"]
+  - job_name: "cadvisor"
+    static_configs:
+      - targets: ["192.168.1.217:8386","192.168.1.218:8386","192.168.1.243:8386"]
+
+# 可选：认证令牌
+auth_token: "t7HXW3jVgfD74VDw="
+
+# 项目名称
+project: "system_monitor"
+labels:
+  project: "system_monitor"  # 必须与 project 字段一致
+  account: "技术部"
+  env: "dev"
+  region: "cd-1"
