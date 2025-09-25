@@ -119,9 +119,10 @@ def read_config(config_path='./conf/config.yaml'):
         sys.exit(1)
 
 # 注册主机到服务端
-def register_host(host_id, hostname, ip, public_ip, os_version, os_details, server_url, auth_token):
+def register_host(host_id, hostname, ip, public_ip, os_version, os_details, server_url, auth_token, region):
     registration_data = {
         'host_id': host_id,
+        'region': region,
         'hostname': hostname,
         'ip': ip,
         'public_ip': public_ip,
@@ -226,11 +227,12 @@ def main():
     scrape_configs = config['scrape_configs']
     auth_token = config.get('auth_token', '')
     custom_labels = config.get('labels', {})
+    region = custom_labels.get('region', '')
     if 'project' in config and 'project' not in custom_labels:
         custom_labels['project'] = config['project']
     host_id = get_host_id()
     hostname, ip, public_ip, os_version, os_details = get_host_info()
-    register_host(host_id, hostname, ip, public_ip, os_version, os_details, victoria_metrics_url.rsplit('/report', 1)[0], auth_token)
+    register_host(host_id, hostname, ip, public_ip, os_version, os_details, victoria_metrics_url.rsplit('/report', 1)[0], auth_token,region)
     while True:
         metrics_data = scrape_targets(scrape_configs, custom_labels, host_id, os_details)
         send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_token)
