@@ -11,6 +11,9 @@ import logging
 import urllib.request
 import psutil
 from datetime import datetime
+import concurrent.futures  # 新增导入
+from requests.adapters import HTTPAdapter  # 新增
+from urllib3.util.retry import Retry  # 新增
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +28,7 @@ LOCAL_ID_FILE = os.getenv('HOST_ID_FILE_PATH', os.path.expanduser("~/.host_id"))
 cached_ip = None
 last_update_time = 0
 # 客户端版本
-CLIENT_VERSION = "v0.1.2"
+CLIENT_VERSION = "v0.1.3"
 # 客户端启动时间
 START_TIME = datetime.now()  # 确保初始化为 datetime 对象
 
@@ -168,11 +171,19 @@ def scrape_targets(scrape_configs, custom_labels, host_id, os_details):
     process_count = len(list(psutil.process_iter()))
     metrics_data += f'client_process_count{{count="{process_count}",{labels}}} {process_count} {current_timestamp}\n'
 
-    for config in scrape_configs:
-        job_name = config['job_name']
-        for target in config['static_configs'][0]['targets']:
+    current_timestamp = int(time.time())
+    # 并发 scrape
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_target = {}
+        for config in scrape_configs:
+            job_name = config['job_name']
+            for target in config['static_configs'][0]['targets']:
+                future = executor.submit(requests.get, f"http://{target}/metrics", timeout=5)  # 缩短 timeout
+                future_to_target[future] = (job_name, target)
+        for future in concurrent.futures.as_completed(future_to_target):
+            job_name, target = future_to_target[future]
             try:
-                response = requests.get(f"http://{target}/metrics", timeout=10)
+                response = future.result()
                 response.raise_for_status()
                 labels = f'job="{job_name}",instance="{target}"'
                 for key, val in custom_labels.items():
@@ -206,19 +217,42 @@ def scrape_targets(scrape_configs, custom_labels, host_id, os_details):
 
 # 将抓取到的指标数据发送到服务端
 def send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_token):
+    session = create_retry_session()
     headers = {
         "X-Hostid": host_id,
         "Content-Type": "text/plain",
         "X-Auth-Token": auth_token
     }
-    try:
-        response = requests.post(victoria_metrics_url, data=metrics_data.encode('utf-8'), headers=headers)
-        response.raise_for_status()
-        #logging.info(f"Metrics sent successfully. Response: {response.text}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to send metrics: {e}")
-        logging.error(f"Request headers: {headers}")
-        logging.error(f"Request URL: {victoria_metrics_url}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = session.post(victoria_metrics_url, data=metrics_data.encode('utf-8'), headers=headers, timeout=10)
+            response.raise_for_status()
+            #logging.info(f"Metrics sent successfully. Response: {response.text}")
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 400 and 'Host not registered' in response.text:
+                logging.warning(f"Host not registered on server. Attempting re-registration (attempt {attempt+1}/{max_retries})")
+                # 重新获取主机信息（以防变化）
+                hostname, ip, public_ip, os_version, os_details = get_host_info()
+                # 调用注册（region 从 config 获取）
+                register_host(host_id, hostname, ip, public_ip, os_version, os_details, victoria_metrics_url.rsplit('/report', 1)[0], auth_token)
+            else:
+                raise
+        except requests.exceptions.RequestException as e:
+            # 用于在发生异常时重试
+            logging.error(f"Failed to send metrics (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                raise  # 最终失败
+            time.sleep(2 ** attempt)
+
+# 创建一个带有重试机制的会话
+def create_retry_session():
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
 
 def main():
     config = read_config()
@@ -234,9 +268,14 @@ def main():
     hostname, ip, public_ip, os_version, os_details = get_host_info()
     register_host(host_id, hostname, ip, public_ip, os_version, os_details, victoria_metrics_url.rsplit('/report', 1)[0], auth_token,region)
     while True:
+        start_cycle = time.time()
         metrics_data = scrape_targets(scrape_configs, custom_labels, host_id, os_details)
         send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_token)
-        time.sleep(report_interval)
+        cycle_time = time.time() - start_cycle
+        if cycle_time < report_interval:
+            time.sleep(report_interval - cycle_time)
+        else:
+            logging.warning(f"Cycle overran by {cycle_time - report_interval}s")
 
 if __name__ == "__main__":
     main()
