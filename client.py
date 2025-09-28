@@ -7,13 +7,15 @@ import requests
 import yaml
 import uuid
 import re
+import gzip
+import zstd # 新增
 import logging
 import urllib.request
 import psutil
 from datetime import datetime
-import concurrent.futures  # 新增导入
-from requests.adapters import HTTPAdapter  # 新增
-from urllib3.util.retry import Retry  # 新增
+import concurrent.futures
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +30,7 @@ LOCAL_ID_FILE = os.getenv('HOST_ID_FILE_PATH', os.path.expanduser("~/.host_id"))
 cached_ip = None
 last_update_time = 0
 # 客户端版本
-CLIENT_VERSION = "v0.1.3"
+CLIENT_VERSION = "v0.1.4"
 # 客户端启动时间
 START_TIME = datetime.now()  # 确保初始化为 datetime 对象
 
@@ -216,7 +218,7 @@ def scrape_targets(scrape_configs, custom_labels, host_id, os_details):
     return metrics_data
 
 # 将抓取到的指标数据发送到服务端
-def send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_token):
+def send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_token, compression):
     session = create_retry_session()
     headers = {
         "X-Hostid": host_id,
@@ -226,7 +228,18 @@ def send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_tok
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = session.post(victoria_metrics_url, data=metrics_data.encode('utf-8'), headers=headers, timeout=10)
+            data = metrics_data.encode('utf-8')
+            if compression == 'gzip':
+                headers['Content-Encoding'] = 'gzip'
+                data = gzip.compress(data)
+                logging.debug(f"Applied gzip compression, size: {len(data)} bytes")
+            elif compression == 'zstd':
+                headers['Content-Encoding'] = 'zstd'
+                data = zstd.compress(data)
+                logging.debug(f"Applied zstd compression, size: {len(data)} bytes")
+            else:
+                logging.debug(f"No compression applied, size: {len(data)} bytes")
+            response = session.post(victoria_metrics_url, data=data, headers=headers, timeout=10)
             response.raise_for_status()
             #logging.info(f"Metrics sent successfully. Response: {response.text}")
         except requests.exceptions.HTTPError as e:
@@ -264,13 +277,17 @@ def main():
     region = custom_labels.get('region', '')
     if 'project' in config and 'project' not in custom_labels:
         custom_labels['project'] = config['project']
+    compression = config.get('compression', 'none').lower()  # 读取压缩方式，默认为 none
+    if compression not in ['none', 'gzip', 'zstd']:
+        logging.error(f"Invalid compression method: {compression}. Use 'none', 'gzip', or 'zstd'.")
+        sys.exit(1)
     host_id = get_host_id()
     hostname, ip, public_ip, os_version, os_details = get_host_info()
     register_host(host_id, hostname, ip, public_ip, os_version, os_details, victoria_metrics_url.rsplit('/report', 1)[0], auth_token,region)
     while True:
         start_cycle = time.time()
         metrics_data = scrape_targets(scrape_configs, custom_labels, host_id, os_details)
-        send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_token)
+        send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_token, compression)
         cycle_time = time.time() - start_cycle
         if cycle_time < report_interval:
             time.sleep(report_interval - cycle_time)
