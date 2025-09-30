@@ -8,14 +8,15 @@ import yaml
 import uuid
 import re
 import gzip
-import zstd # 新增
+import zstd
 import logging
 import urllib.request
 import psutil
+import subprocess
 from datetime import datetime
-import concurrent.futures
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import concurrent.futures  # 新增导入
+from requests.adapters import HTTPAdapter  # 新增
+from urllib3.util.retry import Retry  # 新增
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,9 +31,27 @@ LOCAL_ID_FILE = os.getenv('HOST_ID_FILE_PATH', os.path.expanduser("~/.host_id"))
 cached_ip = None
 last_update_time = 0
 # 客户端版本
-CLIENT_VERSION = "v0.1.4"
+CLIENT_VERSION = "v0.1.5"
 # 客户端启动时间
 START_TIME = datetime.now()  # 确保初始化为 datetime 对象
+
+# 检测是否运行在容器内
+def is_in_container():
+    """检测是否运行在容器内"""
+    # 检查/.dockerenv文件是否存在
+    if os.path.exists('/.dockerenv'):
+        return True
+    
+    # 检查cgroup信息
+    try:
+        with open('/proc/1/cgroup', 'r') as f:
+            content = f.read()
+            if 'docker' in content or 'kubepods' in content or 'container' in content:
+                return True
+    except:
+        pass
+    
+    return False
 
 # 获取或生成 host_id
 def get_host_id():
@@ -48,28 +67,157 @@ def get_host_id():
         f.write(host_id)
     return host_id
 
+def get_os_info():
+    """获取操作系统详细信息"""
+    try:
+        # 如果在容器中，优先尝试从挂载的宿主机文件系统读取
+        if is_in_container():
+            host_paths = [
+                '/host/etc/os-release',
+                '/host/etc/redhat-release',
+                '/host/etc/lsb-release',
+            ]
+            
+            for host_path in host_paths:
+                if os.path.exists(host_path):
+                    try:
+                        with open(host_path, 'r') as f:
+                            if host_path.endswith('os-release'):
+                                lines = f.readlines()
+                                os_info = {}
+                                for line in lines:
+                                    if '=' in line:
+                                        key, value = line.strip().split('=', 1)
+                                        os_info[key] = value.strip('"')
+                                name = os_info.get('PRETTY_NAME', os_info.get('NAME', 'Unknown'))
+                                version = os_info.get('VERSION_ID', '')
+                                return f"{name} {version}".strip()
+                            else:
+                                content = f.read().strip()
+                                if 'redhat' in host_path:
+                                    return f"CentOS/RedHat {content}"
+                                elif 'lsb' in host_path:
+                                    return f"Ubuntu/Debian {content}"
+                    except Exception as e:
+                        logging.debug(f"从挂载路径 {host_path} 读取失败: {e}")
+        
+        # 通用方法：读取本地文件系统信息
+        if os.path.exists('/etc/os-release'):
+            with open('/etc/os-release', 'r') as f:
+                lines = f.readlines()
+            
+            os_info = {}
+            for line in lines:
+                if '=' in line:
+                    key, value = line.strip().split('=', 1)
+                    os_info[key] = value.strip('"')
+            
+            name = os_info.get('PRETTY_NAME', os_info.get('NAME', 'Unknown'))
+            version = os_info.get('VERSION_ID', '')
+            
+            return f"{name} {version}".strip()
+        
+        # 备用方案：检查特定发行版文件
+        distro_files = {
+            '/etc/redhat-release': 'RedHat/CentOS',
+            '/etc/lsb-release': 'Ubuntu/Debian',
+            '/etc/debian_version': 'Debian',
+        }
+        
+        for file_path, distro_name in distro_files.items():
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    content = f.read().strip()
+                    return f"{distro_name} {content}"
+        
+        return platform.platform()
+    except Exception as e:
+        logging.warning(f"获取OS信息失败: {e}")
+        return platform.platform()
+
+def get_cpu_info():
+    """获取CPU详细信息"""
+    try:
+        # 如果在容器中，优先尝试从挂载的宿主机文件系统读取
+        if is_in_container() and os.path.exists('/host/proc/cpuinfo'):
+            try:
+                with open('/host/proc/cpuinfo', 'r') as f:
+                    content = f.read()
+                
+                model_match = re.search(r'model name\s*:\s*(.+)', content)
+                if model_match:
+                    return model_match.group(1).strip()
+            except Exception as e:
+                logging.debug(f"从挂载的 /host/proc/cpuinfo 读取失败: {e}")
+        
+        # 通用方法：读取本地CPU信息
+        if os.path.exists('/proc/cpuinfo'):
+            with open('/proc/cpuinfo', 'r') as f:
+                content = f.read()
+            
+            model_match = re.search(r'model name\s*:\s*(.+)', content)
+            if model_match:
+                return model_match.group(1).strip()
+        
+        # 尝试使用lscpu命令
+        try:
+            result = subprocess.run(['lscpu'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                model_match = re.search(r'Model name:\s*(.+)', result.stdout)
+                if model_match:
+                    return model_match.group(1).strip()
+                
+                arch_match = re.search(r'Architecture:\s*(.+)', result.stdout)
+                if arch_match:
+                    return f"CPU Architecture: {arch_match.group(1).strip()}"
+        except:
+            pass
+            
+    except Exception as e:
+        logging.warning(f"获取CPU信息失败: {e}")
+    
+    return platform.processor()
+
+
+def get_disk_info():
+    """获取磁盘信息，适配容器和宿主机环境"""
+    disk_total = 0
+    seen_devices = set()
+    
+    for part in psutil.disk_partitions():
+        # 跳过特殊文件系统
+        if part.fstype in ['tmpfs', 'devtmpfs', 'squashfs', 'overlay']:
+            continue
+            
+        try:
+            # 避免重复计算同一设备
+            if part.device in seen_devices:
+                continue
+                
+            disk_usage = psutil.disk_usage(part.mountpoint)
+            disk_total += disk_usage.total
+            seen_devices.add(part.device)
+        except OSError as e:
+            logging.warning(f"无法获取挂载点 {part.mountpoint} 的磁盘信息: {e}")
+            continue
+            
+    return disk_total / (1024**3)  # 转换为 GB
+
 # 获取主机信息
 def get_host_info():
     hostname = socket.gethostname()
     ip = get_host_ip()
     public_ip = getIp()
-    os_version = platform.platform()
+    #os_version = platform.platform()
+    os_version = get_os_info()
     # 计算磁盘总大小
-    disk_total = 0
-    for part in psutil.disk_partitions():
-        try:
-            disk_usage = psutil.disk_usage(part.mountpoint)
-            disk_total += disk_usage.total
-        except OSError as e:
-            logging.warning(f"无法获取挂载点 {part.mountpoint} 的磁盘信息: {e}")
-            continue
-    disk_total = disk_total / (1024**3)  # 转换为 GB
+    disk_total = get_disk_info()
     os_details = {
         'system': platform.system(), # 操作系统名称
         'release': platform.release(), # 操作系统版本
         'version': platform.version(), # 操作系统详细版本
         'machine': platform.machine(), # 机器类型
-        'processor': platform.processor(), # 处理器类型
+        'processor': get_cpu_info(), # 处理器类型
         'python_version': platform.python_version(), # Python 版本
         'cpu_count': psutil.cpu_count(), # CPU 核心数
         'memory_total': psutil.virtual_memory().total / (1024**3),  # 总内存大小，单位 GB

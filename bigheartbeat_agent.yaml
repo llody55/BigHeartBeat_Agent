@@ -2,14 +2,16 @@ version: '3'
 
 services:
   bigheartbeat_agent:
-    image: swr.cn-southwest-2.myhuaweicloud.com/llody/bigheartbeat_agent:v0.1.4-amd64
+    image: swr.cn-southwest-2.myhuaweicloud.com/llody/bigheartbeat_agent:v0.1.5-amd64
     container_name: bigheartbeat_agent
     network_mode: host
+    privileged: true
     volumes:
       - /data/bigheartbeat_agent/data:/app/data
       - /data/bigheartbeat_agent/conf:/app/conf
-      - /proc:/proc
-      - /sys:/sys
+      - /etc:/host/etc:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
       - /etc/localtime:/etc/localtime:ro
     environment:
       - TZ=Asia/Shanghai
