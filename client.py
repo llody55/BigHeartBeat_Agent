@@ -27,11 +27,14 @@ logging.basicConfig(
 
 # 本地存储 host_id 的文件路径
 LOCAL_ID_FILE = os.getenv('HOST_ID_FILE_PATH', os.path.expanduser("~/.host_id"))
+# 最大重试次数
+MAX_CONNECT_RETRY = int(os.getenv('MAX_CONNECT_RETRY', '3'))
+RETRY_BACKOFF_BASE = 5  # 指数退避基数（秒）
 # 缓存 IP 地址和最后更新时间
 cached_ip = None
 last_update_time = 0
 # 客户端版本
-CLIENT_VERSION = "v0.1.5"
+CLIENT_VERSION = "v0.1.6"
 # 客户端启动时间
 START_TIME = datetime.now()  # 确保初始化为 datetime 对象
 
@@ -271,6 +274,28 @@ def read_config(config_path='./conf/config.yaml'):
         logging.error(f"Error reading configuration file: {e}")
         sys.exit(1)
 
+def request_with_retry(func, *args, **kwargs):
+    """
+    通用网络请求包装器，支持指数退避重试
+    """
+    attempt = 0
+    while True:
+        try:
+            return func(*args, **kwargs)
+        except requests.exceptions.RequestException as e:
+            attempt += 1
+            if attempt > MAX_CONNECT_RETRY:
+                logging.error(f"Network request failed after {MAX_CONNECT_RETRY} attempts. Giving up.")
+                raise  # 最终失败，交给调用方处理
+            wait_time = RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
+            logging.warning(f"Network request failed (attempt {attempt}/{MAX_CONNECT_RETRY}): {e}. "
+                          f"Retrying in {wait_time}s...")
+            time.sleep(wait_time)
+        except Exception as e:
+            # 非网络异常，直接抛出
+            logging.error(f"Unexpected error in request: {e}")
+            raise
+
 # 注册主机到服务端
 def register_host(host_id, hostname, ip, public_ip, os_version, os_details, server_url, auth_token, region):
     registration_data = {
@@ -287,14 +312,13 @@ def register_host(host_id, hostname, ip, public_ip, os_version, os_details, serv
         'Content-Type': 'application/json',
         'X-Auth-Token': auth_token
     }
-    try:
-        response = requests.post(f"{server_url}/register", json=registration_data, headers=headers)
+    def _post():
+        response = requests.post(f"{server_url}/register", json=registration_data, headers=headers, timeout=10)
         response.raise_for_status()
-        #logging.info(f"Host registered successfully: {response.json()}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to register host: {e}")
-        logging.error(f"Request headers: {headers}")
-        logging.error(f"Request URL: {server_url}/register")
+        logging.info("Host registered/re-registered successfully.")
+        return response
+
+    request_with_retry(_post)
 
 # 从配置中抓取 Prometheus 指标数据并添加标签
 def scrape_targets(scrape_configs, custom_labels, host_id, os_details):
@@ -367,44 +391,34 @@ def scrape_targets(scrape_configs, custom_labels, host_id, os_details):
 
 # 将抓取到的指标数据发送到服务端
 def send_metrics_to_server(metrics_data, host_id, victoria_metrics_url, auth_token, compression):
-    session = create_retry_session()
     headers = {
         "X-Hostid": host_id,
         "Content-Type": "text/plain",
         "X-Auth-Token": auth_token
     }
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            data = metrics_data.encode('utf-8')
-            if compression == 'gzip':
-                headers['Content-Encoding'] = 'gzip'
-                data = gzip.compress(data)
-                logging.debug(f"Applied gzip compression, size: {len(data)} bytes")
-            elif compression == 'zstd':
-                headers['Content-Encoding'] = 'zstd'
-                data = zstd.compress(data)
-                logging.debug(f"Applied zstd compression, size: {len(data)} bytes")
-            else:
-                logging.debug(f"No compression applied, size: {len(data)} bytes")
-            response = session.post(victoria_metrics_url, data=data, headers=headers, timeout=10)
-            response.raise_for_status()
-            #logging.info(f"Metrics sent successfully. Response: {response.text}")
-        except requests.exceptions.HTTPError as e:
-            if response.status_code == 400 and 'Host not registered' in response.text:
-                logging.warning(f"Host not registered on server. Attempting re-registration (attempt {attempt+1}/{max_retries})")
-                # 重新获取主机信息（以防变化）
-                hostname, ip, public_ip, os_version, os_details = get_host_info()
-                # 调用注册（region 从 config 获取）
-                register_host(host_id, hostname, ip, public_ip, os_version, os_details, victoria_metrics_url.rsplit('/report', 1)[0], auth_token)
-            else:
-                raise
-        except requests.exceptions.RequestException as e:
-            # 用于在发生异常时重试
-            logging.error(f"Failed to send metrics (attempt {attempt+1}/{max_retries}): {e}")
-            if attempt == max_retries - 1:
-                raise  # 最终失败
-            time.sleep(2 ** attempt)
+
+    def _send():
+        session = create_retry_session()
+        data = metrics_data.encode('utf-8')
+        if compression == 'gzip':
+            headers['Content-Encoding'] = 'gzip'
+            data = gzip.compress(data)
+        elif compression == 'zstd':
+            headers['Content-Encoding'] = 'zstd'
+            data = zstd.compress(data)
+
+        response = session.post(victoria_metrics_url, data=data, headers=headers, timeout=10)
+        
+        if response.status_code == 400 and 'Host not registered' in response.text:
+            logging.warning("Host not registered. Re-registering...")
+            # 重新获取主机信息（以防变化）
+            hostname, ip, public_ip, os_version, os_details = get_host_info()
+            register_host(host_id, hostname, ip, public_ip, os_version, os_details,victoria_metrics_url.rsplit('/report', 1)[0], auth_token, )
+        
+        response.raise_for_status()
+        return response
+
+    request_with_retry(_send)
 
 # 创建一个带有重试机制的会话
 def create_retry_session():

@@ -1,4 +1,4 @@
-FROM python:3.10.2-slim
+FROM swr.cn-southwest-2.myhuaweicloud.com/llody/python:3.10.2-slim
 
 LABEL maintainer="llody"
 
@@ -8,7 +8,9 @@ WORKDIR /app
 
 COPY . /app
 
-RUN apt-get update && \
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list && \
+    sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list && \
+    apt-get update && \
     apt-get install -y --no-install-recommends gcc python3-dev curl && \
     pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ && \
     apt-get remove -y gcc python3-dev && \
@@ -25,5 +27,8 @@ USER llody
 ENV HOST_ID_FILE_PATH="/app/data/host_id"
 
 VOLUME /app/data
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD pgrep -f client.py || exit 1
 
 CMD ["python3","client.py"]

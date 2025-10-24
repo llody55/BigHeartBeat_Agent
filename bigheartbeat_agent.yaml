@@ -2,7 +2,7 @@ version: '3'
 
 services:
   bigheartbeat_agent:
-    image: swr.cn-southwest-2.myhuaweicloud.com/llody/bigheartbeat_agent:v0.1.5-amd64
+    image: swr.cn-southwest-2.myhuaweicloud.com/llody/bigheartbeat_agent:v0.1.6
     container_name: bigheartbeat_agent
     network_mode: host
     privileged: true
