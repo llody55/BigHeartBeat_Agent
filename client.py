@@ -34,7 +34,7 @@ RETRY_BACKOFF_BASE = 5  # 指数退避基数（秒）
 cached_ip = None
 last_update_time = 0
 # 客户端版本
-CLIENT_VERSION = "v0.1.6"
+CLIENT_VERSION = "v0.1.7"
 # 客户端启动时间
 START_TIME = datetime.now()  # 确保初始化为 datetime 对象
 

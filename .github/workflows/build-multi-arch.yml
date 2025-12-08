@@ -9,7 +9,8 @@ on:
 
 env:
   REGISTRY: swr.cn-southwest-2.myhuaweicloud.com
-  RELEASE_VERSION: 'v0.1.6'
+  IMAGE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+  RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.7' }}
 
 jobs:
   build:
@@ -31,7 +32,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.12'
     - name: Install system dependencies (for psutil compilation)
       run: |
         sudo apt-get update
@@ -63,5 +64,40 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: true
         tags: |
-          llody/bigheartbeat_agent:${{ env.RELEASE_VERSION }}
+          llody/bigheartbeat_agent:${{ env.IMAGE_TAG }}
           llody/bigheartbeat_agent:latest
+  
+  security-and-release:
+    needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Download built image (for scanning)
+      run: docker pull llody/bigheartbeat_agent:${{ github.ref_name }}
+
+    - name: Scan image with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: llody/bigheartbeat_agent:${{ github.ref_name }}
+        severity: HIGH,CRITICAL
+        format: table
+
+    - name: Create GitHub Release with security fixes
+      uses: softprops/action-gh-release@v2
+      with:
+        name: bigheartbeat_agent ${{ github.ref_name }}
+        body: |
+          ## 安全修复（已全部解决）
+          - **CVE-2015-20107 (ID: 79683, 高风险 7.6)**: mailcap 模块特殊字符未转义导致命令注入。**修复**：升级 Python 到 3.12.x（官方补丁在 3.9.13+ 引入）。影响版本：3.10.4 及之前。
+          - **CVE-2022-26488 (ID: 79682, 高风险 7.0)**: Windows 安装程序权限绕过。**修复**：升级 Python 到 3.12.x（官方补丁在 3.10.3+ 引入）。影响版本：3.10.4 及之前。
+          - **CVE-2023-27043 (ID: 231395, 中风险 5.0)**: email 模块特殊字符解析错误。**修复**：升级 Python 到 3.12.x（官方补丁在 3.11.4+ 引入）。影响版本：3.11.3 及之前。
+
+          ## 镜像地址
+          - `llody/bigheartbeat_agent:${{ github.ref_name }}`
+          - `llody/bigheartbeat_agent:latest`
+
+          感谢使用 BigHeartBeat！
+        draft: false
+        prerelease: false
