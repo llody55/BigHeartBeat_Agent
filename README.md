@@ -63,7 +63,13 @@ labels:
 ### docker启动命令
 
 ```bash
-[root@consul BigHeartBeatMaxPro_agent]# docker run -itd --network host -v /data/bigheartbeat_agent/data:/app/data -v /data/bigheartbeat_agent/conf:/app/conf -v /proc:/proc -v /sys:/sys  swr.cn-southwest-2.myhuaweicloud.com/llody/bigheartbeat_agent:v0.1.2-amd64
+[root@consul BigHeartBeatMaxPro_agent]# docker run -itd --network host -v /data/bigheartbeat_agent/data:/app/data -v /data/bigheartbeat_agent/conf:/app/conf -v /proc:/proc -v /sys:/sys  swr.cn-southwest-2.myhuaweicloud.com/llody/bigheartbeat_agent:latest
 2025-09-19 03:24:45 - INFO - 成功获取公网IP: 
 2025-09-19 03:24:45 - INFO - 主机信息: {'system': 'Linux', 'release': '3.10.0-1160.66.1.el7.x86_64', 'version': '#1 SMP Wed May 18 16:02:34 UTC 2022', 'machine': 'x86_64', 'processor': '', 'python_version': '3.10.2', 'cpu_count': 4, 'memory_total': 17.156105041503906, 'disk_total': 455.9881782531738, 'boot_time': '2025-07-29T14:40:17'}
+```
+
+### docker-compose部署
+
+```bash
+docker-compose -p bigheartbeat_agent -f bigheartbeat_agent.yaml up -d
 ```
