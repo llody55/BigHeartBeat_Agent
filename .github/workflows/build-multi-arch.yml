@@ -13,7 +13,7 @@ env:
   RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.7' }}
 
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
