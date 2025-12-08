@@ -64,7 +64,7 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: true
         tags: |
-          llody/bigheartbeat_agent:${{ env.IMAGE_TAG }}
+          llody/bigheartbeat_agent:${{ env.RELEASE_VERSION }}
           llody/bigheartbeat_agent:latest
   
   security-and-release:
